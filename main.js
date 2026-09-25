@@ -1,4 +1,11 @@
-import { playhtml } from "https://unpkg.com/playhtml";
+let playhtml = null;
+
+// Mã phòng được lấy trực tiếp từ ?room=... để hai máy luôn vào đúng cùng một room,
+// không phụ thuộc dấu / cuối URL hay cách GitHub Pages redirect.
+const ROOM_CODE = (new URLSearchParams(window.location.search).get("room") || "main")
+  .trim()
+  .toLowerCase();
+const ROOM_ID = `ottv2-${ROOM_CODE}`;
 
 const BOARD_SIZE = 8;
 const FILES = "abcdefgh";
@@ -548,7 +555,7 @@ function resetGame() {
 }
 
 function refreshPresence() {
-  if (!playhtml.presence) return;
+  if (!playhtml?.presence) return;
   const presences = playhtml.presence.getPresences();
   const ids = new Set();
 
@@ -584,11 +591,61 @@ async function copyRoomLink() {
   }
 }
 
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(message)), ms)
+    ),
+  ]);
+}
+
+async function loadPlayHTML() {
+  // Máy/trường/mạng nào chặn một CDN vẫn còn CDN dự phòng.
+  const sources = [
+    "https://unpkg.com/playhtml?module",
+    "https://cdn.jsdelivr.net/npm/playhtml/+esm",
+  ];
+
+  let lastError = null;
+  for (const source of sources) {
+    try {
+      const mod = await withTimeout(
+        import(source),
+        10000,
+        `Quá thời gian tải PlayHTML từ ${source}`
+      );
+      if (mod?.playhtml) return mod.playhtml;
+    } catch (error) {
+      console.warn("Không tải được PlayHTML từ", source, error);
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("Không tải được thư viện PlayHTML.");
+}
+
 async function init() {
+  // Vẽ bàn ngay lập tức. Nếu mạng/CDN chậm, người dùng vẫn thấy giao diện thay vì
+  // bị kẹt mãi ở “Đang tải ván đấu…”. Khi PlayHTML sync xong, state thật sẽ thay thế.
+  gameState = createInitialState();
+  myRole = "spectator";
+  renderAll();
+  els.connectionText.textContent = "Đang kết nối realtime…";
+  els.roomText.textContent = `Phòng: ${ROOM_CODE}`;
+
   try {
-    // Theo docs PlayHTML: cùng URL/path/query => cùng room nếu không override room.
-    playhtml.init();
-    await playhtml.ready;
+    playhtml = await loadPlayHTML();
+
+    // Dùng room tường minh để hai máy chỉ cần cùng ?room=ABC123 là chắc chắn chung phòng.
+    await withTimeout(
+      playhtml.init({
+        room: ROOM_ID,
+        onError: () => console.warn("PlayHTML báo lỗi kết nối realtime."),
+      }),
+      15000,
+      "PlayHTML kết nối quá 15 giây. Có thể mạng, firewall hoặc extension đang chặn realtime."
+    );
 
     const identity = playhtml.presence.getMyIdentity();
     myId = identity.publicKey;
@@ -599,7 +656,7 @@ async function init() {
     refreshPresence();
 
     // Shared persistent store của toàn bộ ván đấu.
-    gameStore = playhtml.createPageData("ottv2-game-state-v1", createInitialState());
+    gameStore = playhtml.createPageData("ottv2-game-state-v2", createInitialState());
     gameState = gameStore.getData();
 
     gameStore.onUpdate((nextState) => {
@@ -610,15 +667,17 @@ async function init() {
 
     els.connectionDot.classList.add("online");
     els.connectionText.textContent = "Đã kết nối realtime";
-    els.roomText.textContent = `Phòng: ${playhtml.roomId || window.location.pathname}`;
+    els.roomText.textContent = `Phòng: ${ROOM_CODE}`;
 
     myRole = deriveMyRole(gameState);
     renderAll();
     autoAssignSeat();
   } catch (error) {
     console.error(error);
-    els.connectionText.textContent = "Không kết nối được";
-    els.statusText.textContent = "PlayHTML chưa kết nối. Kiểm tra Internet và mở trang qua HTTP/HTTPS.";
+    els.connectionDot.classList.remove("online");
+    els.connectionText.textContent = "Mất kết nối realtime";
+    els.statusText.textContent =
+      "Bàn cờ đã tải nhưng multiplayer chưa kết nối. Hãy thử Chrome/Edge, tắt AdBlock/VPN rồi tải lại.";
     setToast(String(error?.message || error), 0);
   }
 }
