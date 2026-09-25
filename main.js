@@ -1,693 +1,1630 @@
-let playhtml = null;
+import { playhtml } from 'https://unpkg.com/playhtml';
 
-// Mã phòng được lấy trực tiếp từ ?room=... để hai máy luôn vào đúng cùng một room,
-// không phụ thuộc dấu / cuối URL hay cách GitHub Pages redirect.
-const ROOM_CODE = (new URLSearchParams(window.location.search).get("room") || "main")
-  .trim()
-  .toLowerCase();
-const ROOM_ID = `ottv2-${ROOM_CODE}`;
+const SIZE = 8;
 
-const BOARD_SIZE = 8;
-const FILES = "abcdefgh";
+const SYMBOL = {
+  rock: '✊',
+  paper: '✋',
+  scissors: '✌️',
+};
 
-const TYPES = {
-  rock: { emoji: "✊", label: "Đấm", short: "Đ" },
-  paper: { emoji: "✋", label: "Lá", short: "L" },
-  scissors: { emoji: "✌️", label: "Kéo", short: "K" },
+const TYPE_NAME = {
+  rock: 'Đấm',
+  paper: 'Lá',
+  scissors: 'Kéo',
 };
 
 const BEATS = {
-  rock: "scissors",
-  scissors: "paper",
-  paper: "rock",
+  rock: 'scissors',
+  scissors: 'paper',
+  paper: 'rock',
 };
 
-const PLAYER_META = {
-  p1: { name: "Player 1 · Xanh", short: "Xanh", target: "h8" },
-  p2: { name: "Player 2 · Đỏ", short: "Đỏ", target: "a1" },
+const SIDE_NAME = {
+  p1: 'Xanh',
+  p2: 'Đỏ',
 };
+
+const START_P1 = [
+  [4, 4, 'rock'],
+  [4, 5, 'scissors'],
+  [5, 3, 'paper'],
+  [5, 4, 'rock'],
+  [5, 5, 'paper'],
+  [6, 3, 'scissors'],
+  [6, 4, 'rock'],
+];
+
+const PRESENCE_KEY = 'ottv2LobbyV4';
+const GAME_KEY = 'ottv2GameV4';
 
 const els = {
-  board: document.querySelector("#board"),
-  statusText: document.querySelector("#statusText"),
-  turnBadge: document.querySelector("#turnBadge"),
-  connectionDot: document.querySelector("#connectionDot"),
-  connectionText: document.querySelector("#connectionText"),
-  roomText: document.querySelector("#roomText"),
-  p1Seat: document.querySelector("#p1Seat"),
-  p2Seat: document.querySelector("#p2Seat"),
-  p1Count: document.querySelector("#p1Count"),
-  p2Count: document.querySelector("#p2Count"),
-  myRole: document.querySelector("#myRole"),
-  joinP1Btn: document.querySelector("#joinP1Btn"),
-  joinP2Btn: document.querySelector("#joinP2Btn"),
-  leaveSeatBtn: document.querySelector("#leaveSeatBtn"),
-  copyRoomBtn: document.querySelector("#copyRoomBtn"),
-  resetBtn: document.querySelector("#resetBtn"),
-  toast: document.querySelector("#toast"),
-  winnerModal: document.querySelector("#winnerModal"),
-  winnerTitle: document.querySelector("#winnerTitle"),
-  winnerReason: document.querySelector("#winnerReason"),
-  winnerIcon: document.querySelector("#winnerIcon"),
-  modalResetBtn: document.querySelector("#modalResetBtn"),
+  board: document.querySelector('#board'),
+  roomCode: document.querySelector('#room-code'),
+  copyLink: document.querySelector('#copy-link'),
+  connection: document.querySelector('#connection'),
+  statusTitle: document.querySelector('#status-title'),
+  statusDetail: document.querySelector('#status-detail'),
+  turnBadge: document.querySelector('#turn-badge'),
+  myRole: document.querySelector('#my-role'),
+  p1Seat: document.querySelector('#p1-seat'),
+  p2Seat: document.querySelector('#p2-seat'),
+  joinP1: document.querySelector('#join-p1'),
+  joinP2: document.querySelector('#join-p2'),
+  leaveSeat: document.querySelector('#leave-seat'),
+  reset: document.querySelector('#reset'),
+  toast: document.querySelector('#toast'),
 };
 
-let gameStore = null;
-let gameState = null;
-let myId = null;
-let myRole = "spectator";
+function randomId() {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function validSide(side) {
+  return side === 'p1' || side === 'p2';
+}
+
+function otherSide(side) {
+  return side === 'p1' ? 'p2' : 'p1';
+}
+
+/* =========================================================
+   ROOM
+   ========================================================= */
+
+const params = new URLSearchParams(location.search);
+
+let roomCode = params.get('room')?.toUpperCase() ?? '';
+
+if (!/^[A-Z0-9-]{4,20}$/.test(roomCode)) {
+  roomCode = randomId()
+    .replaceAll('-', '')
+    .slice(0, 6)
+    .toUpperCase();
+
+  params.set('room', roomCode);
+
+  history.replaceState(
+    null,
+    '',
+    `${location.pathname}?${params.toString()}${location.hash}`,
+  );
+}
+
+els.roomCode.textContent = roomCode;
+
+/* =========================================================
+   LOCAL PLAYER
+   ========================================================= */
+
+let clientId = null;
+let channel = null;
+let game = null;
 let selected = null;
-let legalTargets = new Map();
-let onlineIds = new Set();
+
 let toastTimer = null;
+let lastGameSnapshot = '';
 
-/**
- * Board coordinates:
- * - board[r][c]
- * - r = 0 is rank 1, r = 7 is rank 8
- * - c = 0 is file a, c = 7 is file h
- *
- * Reflection across the anti-diagonal h1-a8:
- * [r, c] -> [7 - c, 7 - r]
- */
-function createInitialBoard() {
-  const board = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null));
+let lobbyReady = false;
+let choosingSide = false;
 
-  // 8 quân P1 ở nửa dưới/trái. Không đặt quân ngay trên ô đích a1/h8.
-  const p1Setup = [
-    { r: 1, c: 0, type: "rock" },
-    { r: 0, c: 1, type: "paper" },
-    { r: 1, c: 1, type: "scissors" },
-    { r: 0, c: 2, type: "rock" },
-    { r: 1, c: 2, type: "paper" },
-    { r: 2, c: 0, type: "scissors" },
-    { r: 2, c: 1, type: "rock" },
-    { r: 2, c: 2, type: "paper" },
-  ];
+const joinedAtKey = `ottv2:${roomCode}:joinedAt`;
+const choiceKey = `ottv2:${roomCode}:choice`;
 
-  for (const piece of p1Setup) {
-    board[piece.r][piece.c] = { owner: "p1", type: piece.type };
+let myJoinedAt = Number(sessionStorage.getItem(joinedAtKey));
 
-    const mirroredR = 7 - piece.c;
-    const mirroredC = 7 - piece.r;
-    board[mirroredR][mirroredC] = { owner: "p2", type: piece.type };
+if (!Number.isFinite(myJoinedAt) || myJoinedAt <= 0) {
+  myJoinedAt = Date.now();
+  sessionStorage.setItem(joinedAtKey, String(myJoinedAt));
+}
+
+let myChoice = sessionStorage.getItem(choiceKey);
+
+if (!validSide(myChoice)) {
+  myChoice = null;
+}
+
+/* =========================================================
+   BOARD
+   ========================================================= */
+
+function createBoard() {
+  const board = Array.from(
+    { length: SIZE },
+    () => Array(SIZE).fill(null),
+  );
+
+  for (const [row, col, type] of START_P1) {
+    board[row][col] = {
+      owner: 'p1',
+      type,
+    };
+
+    /*
+      Đối xứng qua đường chéo phụ h1 - a8:
+      [r, c] -> [7-c, 7-r]
+    */
+    board[7 - col][7 - row] = {
+      owner: 'p2',
+      type,
+    };
   }
 
   return board;
 }
 
-function createInitialState(seats = { p1: null, p2: null }) {
+function initialGame() {
   return {
-    board: createInitialBoard(),
-    turn: "p1",
+    board: createBoard(),
+    turn: 'p1',
     winner: null,
-    winReason: null,
-    seats: { p1: seats.p1 ?? null, p2: seats.p2 ?? null },
-    moveNumber: 0,
     lastMove: null,
+    moveNumber: 0,
   };
 }
 
-function coordName(r, c) {
-  return `${FILES[c]}${r + 1}`;
+/* =========================================================
+   PRESENCE / PLAYER ORDER
+   ========================================================= */
+
+function publishMyPresence() {
+  if (!clientId) return;
+
+  playhtml.presence.setMyPresence(PRESENCE_KEY, {
+    token: clientId,
+    joinedAt: myJoinedAt,
+    choice: myChoice,
+  });
 }
 
-function keyOf(r, c) {
-  return `${r},${c}`;
-}
+function getLobbyPlayers() {
+  if (!clientId) return [];
 
-function insideBoard(r, c) {
-  return r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE;
-}
+  const playersByToken = new Map();
 
-function cloneBoard(board) {
-  return board.map((row) => row.map((piece) => (piece ? { ...piece } : null)));
-}
+  const presences = playhtml.presence.getPresences();
 
-function canCapture(attacker, defender) {
-  return Boolean(
-    attacker &&
-      defender &&
-      attacker.owner !== defender.owner &&
-      BEATS[attacker.type] === defender.type
-  );
-}
+  for (const person of presences.values()) {
+    const data = person?.[PRESENCE_KEY];
 
-function getLegalTargets(board, fromR, fromC) {
-  const piece = board[fromR]?.[fromC];
-  const result = new Map();
-  if (!piece) return result;
+    if (!data?.token) continue;
 
-  for (let dr = -1; dr <= 1; dr += 1) {
-    for (let dc = -1; dc <= 1; dc += 1) {
-      if (dr === 0 && dc === 0) continue;
+    const token = String(data.token);
 
-      const r = fromR + dr;
-      const c = fromC + dc;
-      if (!insideBoard(r, c)) continue;
+    const joinedAt = Number(data.joinedAt) || 0;
 
-      const target = board[r][c];
-      if (!target) {
-        result.set(keyOf(r, c), "move");
-        continue;
-      }
+    const choice = validSide(data.choice)
+      ? data.choice
+      : null;
 
-      if (target.owner === piece.owner) continue;
-      if (canCapture(piece, target)) {
-        result.set(keyOf(r, c), "capture");
-      }
+    const current = playersByToken.get(token);
+
+    /*
+      Nếu cùng một publicKey xuất hiện nhiều lần,
+      giữ phiên có thời điểm vào sớm nhất.
+    */
+    if (
+      !current ||
+      joinedAt < current.joinedAt
+    ) {
+      playersByToken.set(token, {
+        token,
+        joinedAt,
+        choice,
+      });
     }
   }
 
-  return result;
+  return [...playersByToken.values()].sort((a, b) => {
+    if (a.joinedAt !== b.joinedAt) {
+      return a.joinedAt - b.joinedAt;
+    }
+
+    return a.token.localeCompare(b.token);
+  });
 }
 
-function countPieces(board, owner) {
-  let total = 0;
-  for (const row of board) {
-    for (const piece of row) {
-      if (piece?.owner === owner) total += 1;
+/*
+  QUY TẮC CHỌN PHE:
+
+  Người thứ 1:
+      được chọn Xanh hoặc Đỏ.
+
+  Người thứ 2:
+      KHÔNG được chọn trước.
+      Sau khi người thứ 1 chọn xong,
+      chỉ được chọn phe còn lại.
+
+  Người thứ 3 trở đi:
+      khán giả.
+
+  Ghế được TÍNH từ Presence thay vì để 2 máy
+  cùng ghi vào một biến seat.
+  Điều này tránh lỗi 2 máy cùng nhận một phe.
+*/
+function deriveLobby() {
+  const players = getLobbyPlayers();
+
+  const first = players[0] ?? null;
+  const second = players[1] ?? null;
+
+  const seats = {
+    p1: null,
+    p2: null,
+  };
+
+  let firstSide = null;
+
+  if (first && validSide(first.choice)) {
+    firstSide = first.choice;
+    seats[firstSide] = first.token;
+  }
+
+  if (
+    firstSide &&
+    second &&
+    validSide(second.choice)
+  ) {
+    const remaining = otherSide(firstSide);
+
+    /*
+      Người thứ hai chỉ được công nhận nếu
+      chọn đúng phe còn lại.
+    */
+    if (second.choice === remaining) {
+      seats[remaining] = second.token;
     }
   }
-  return total;
+
+  return {
+    players,
+    first,
+    second,
+    firstSide,
+    seats,
+  };
 }
 
-function determineWinnerAfterMove(board, mover, toR, toC) {
-  if (mover === "p1" && toR === 7 && toC === 7) {
-    return { winner: "p1", reason: "Xanh đã đưa một quân tới ô đích h8." };
+function mySide(layout = deriveLobby()) {
+  if (!clientId) return null;
+
+  if (layout.seats.p1 === clientId) {
+    return 'p1';
   }
 
-  if (mover === "p2" && toR === 0 && toC === 0) {
-    return { winner: "p2", reason: "Đỏ đã đưa một quân tới ô đích a1." };
-  }
-
-  const opponent = mover === "p1" ? "p2" : "p1";
-  if (countPieces(board, opponent) === 0) {
-    return {
-      winner: mover,
-      reason: `${PLAYER_META[mover].short} đã ăn hết toàn bộ quân của đối phương.`,
-    };
+  if (layout.seats.p2 === clientId) {
+    return 'p2';
   }
 
   return null;
 }
 
-function deriveMyRole(state = gameState) {
-  if (!state || !myId) return "spectator";
-  if (state.seats?.p1 === myId) return "p1";
-  if (state.seats?.p2 === myId) return "p2";
-  return "spectator";
+function bothPlayersReady(layout = deriveLobby()) {
+  return Boolean(
+    layout.seats.p1 &&
+    layout.seats.p2,
+  );
 }
 
-function shortId(id) {
-  if (!id) return "Trống";
-  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+function myLobbyIndex(layout = deriveLobby()) {
+  return layout.players.findIndex(
+    (player) => player.token === clientId,
+  );
 }
 
-function isSeatAvailable(player) {
-  const holder = gameState?.seats?.[player];
-  return !holder || holder === myId || !onlineIds.has(holder);
-}
+/* =========================================================
+   UI HELPERS
+   ========================================================= */
 
-function setToast(message, timeout = 2600) {
+function notify(message) {
   els.toast.textContent = message;
+  els.toast.classList.add('show');
+
   clearTimeout(toastTimer);
-  if (timeout > 0) {
-    toastTimer = setTimeout(() => {
-      els.toast.textContent = "";
-    }, timeout);
-  }
+
+  toastTimer = setTimeout(() => {
+    els.toast.classList.remove('show');
+  }, 3200);
 }
 
-function renderBoard() {
-  if (!gameState) return;
+function coordinate(row, col) {
+  return `${'abcdefgh'[col]}${8 - row}`;
+}
 
-  els.board.replaceChildren();
-  const fragment = document.createDocumentFragment();
+/* =========================================================
+   GAME RULES
+   ========================================================= */
 
-  // Hiển thị rank 8 ở trên cùng, rank 1 ở dưới cùng.
-  for (let displayR = 7; displayR >= 0; displayR -= 1) {
-    for (let c = 0; c < BOARD_SIZE; c += 1) {
-      const piece = gameState.board[displayR][c];
-      const tile = document.createElement("button");
-      const tileKey = keyOf(displayR, c);
-      const moveKind = legalTargets.get(tileKey);
-      const isSelected = selected?.r === displayR && selected?.c === c;
-      const isTarget =
-        (displayR === 0 && c === 0) ||
-        (displayR === 7 && c === 7);
+function getLegalMoves(board, row, col) {
+  const piece = board[row]?.[col];
 
-      tile.type = "button";
-      tile.className = `tile ${(displayR + c) % 2 === 0 ? "dark" : "light"}`;
-      tile.dataset.r = String(displayR);
-      tile.dataset.c = String(c);
-      tile.dataset.coord = coordName(displayR, c);
-      tile.setAttribute("role", "gridcell");
-      tile.setAttribute("aria-label", buildTileAriaLabel(displayR, c, piece));
+  const moves = new Map();
 
-      if (isTarget) tile.classList.add("target-tile");
-      if (isSelected) tile.classList.add("selected");
-      if (moveKind === "move") tile.classList.add("valid-move");
-      if (moveKind === "capture") tile.classList.add("valid-capture");
+  if (!piece) {
+    return moves;
+  }
 
-      const canSelect =
-        !gameState.winner &&
-        piece?.owner === myRole &&
-        gameState.turn === myRole;
-      if (canSelect || moveKind) tile.classList.add("can-select");
-
-      const coord = document.createElement("span");
-      coord.className = "coord";
-      coord.textContent = coordName(displayR, c);
-      tile.append(coord);
-
-      if (piece) {
-        const pieceEl = document.createElement("span");
-        pieceEl.className = `piece ${piece.owner}`;
-        pieceEl.title = `${PLAYER_META[piece.owner].short} · ${TYPES[piece.type].label}`;
-        pieceEl.innerHTML = `
-          <span aria-hidden="true">${TYPES[piece.type].emoji}</span>
-          <span class="piece-label" aria-hidden="true">${TYPES[piece.type].short}</span>
-        `;
-        tile.append(pieceEl);
+  for (let dr = -1; dr <= 1; dr += 1) {
+    for (let dc = -1; dc <= 1; dc += 1) {
+      if (dr === 0 && dc === 0) {
+        continue;
       }
 
-      fragment.append(tile);
+      const nr = row + dr;
+      const nc = col + dc;
+
+      if (
+        nr < 0 ||
+        nr >= SIZE ||
+        nc < 0 ||
+        nc >= SIZE
+      ) {
+        continue;
+      }
+
+      const occupant = board[nr][nc];
+
+      /*
+        Ô trống -> được đi.
+      */
+      if (!occupant) {
+        moves.set(`${nr},${nc}`, 'move');
+        continue;
+      }
+
+      /*
+        Đồng minh -> không được đi.
+      */
+      if (occupant.owner === piece.owner) {
+        continue;
+      }
+
+      /*
+        Cùng loại -> hòa -> không được ăn.
+      */
+      if (occupant.type === piece.type) {
+        continue;
+      }
+
+      /*
+        Oẳn tù tì:
+        Đấm > Kéo
+        Kéo > Lá
+        Lá > Đấm
+      */
+      if (
+        BEATS[piece.type] === occupant.type
+      ) {
+        moves.set(
+          `${nr},${nc}`,
+          'capture',
+        );
+      }
     }
   }
 
-  els.board.append(fragment);
+  return moves;
 }
 
-function buildTileAriaLabel(r, c, piece) {
-  const base = `Ô ${coordName(r, c)}`;
-  if (!piece) return base;
-  return `${base}, ${PLAYER_META[piece.owner].short}, ${TYPES[piece.type].label}`;
+/* =========================================================
+   BOARD RENDER
+   ========================================================= */
+
+function renderBoard() {
+  if (!game) return;
+
+  const layout = deriveLobby();
+  const side = mySide(layout);
+
+  const canPlay =
+    lobbyReady &&
+    bothPlayersReady(layout) &&
+    side === game.turn &&
+    !game.winner;
+
+  const moves =
+    selected && canPlay
+      ? getLegalMoves(
+          game.board,
+          selected.row,
+          selected.col,
+        )
+      : new Map();
+
+  const fragment =
+    document.createDocumentFragment();
+
+  for (let row = 0; row < SIZE; row += 1) {
+    for (
+      let col = 0;
+      col < SIZE;
+      col += 1
+    ) {
+      const square =
+        document.createElement('button');
+
+      const piece =
+        game.board[row][col];
+
+      const key = `${row},${col}`;
+
+      const move = moves.get(key);
+
+      const coord =
+        coordinate(row, col);
+
+      square.type = 'button';
+
+      square.dataset.row =
+        String(row);
+
+      square.dataset.col =
+        String(col);
+
+      square.className =
+        `square ${
+          (row + col) % 2
+            ? 'dark'
+            : 'light'
+        }`;
+
+      square.setAttribute(
+        'role',
+        'gridcell',
+      );
+
+      square.setAttribute(
+        'aria-label',
+        `${coord}${
+          piece
+            ? `, ${TYPE_NAME[piece.type]} phe ${SIDE_NAME[piece.owner]}`
+            : ', trống'
+        }${
+          move
+            ? move === 'capture'
+              ? ', có thể ăn'
+              : ', có thể đi'
+            : ''
+        }`,
+      );
+
+      /*
+        a1 = đích Đỏ
+      */
+      if (
+        row === 7 &&
+        col === 0
+      ) {
+        square.classList.add(
+          'goal-red',
+        );
+      }
+
+      /*
+        h8 = đích Xanh
+      */
+      if (
+        row === 0 &&
+        col === 7
+      ) {
+        square.classList.add(
+          'goal-blue',
+        );
+      }
+
+      if (
+        game.lastMove &&
+        (
+          (
+            game.lastMove.from[0] === row &&
+            game.lastMove.from[1] === col
+          ) ||
+          (
+            game.lastMove.to[0] === row &&
+            game.lastMove.to[1] === col
+          )
+        )
+      ) {
+        square.classList.add(
+          'last-move',
+        );
+      }
+
+      if (
+        selected?.row === row &&
+        selected?.col === col
+      ) {
+        square.classList.add(
+          'selected',
+        );
+
+        square.setAttribute(
+          'aria-selected',
+          'true',
+        );
+      }
+
+      if (move) {
+        square.classList.add(
+          `legal-${move}`,
+        );
+      }
+
+      if (piece) {
+        square.classList.add(
+          'has-piece',
+        );
+
+        const token =
+          document.createElement('span');
+
+        token.className =
+          `piece ${piece.owner}`;
+
+        token.textContent =
+          SYMBOL[piece.type];
+
+        token.setAttribute(
+          'aria-hidden',
+          'true',
+        );
+
+        square.append(token);
+      }
+
+      fragment.append(square);
+    }
+  }
+
+  els.board.replaceChildren(
+    fragment,
+  );
 }
+
+/* =========================================================
+   SEAT UI
+   ========================================================= */
+
+function renderSeats() {
+  if (!clientId) return;
+
+  const layout = deriveLobby();
+  const side = mySide(layout);
+
+  const p1Holder =
+    layout.seats.p1;
+
+  const p2Holder =
+    layout.seats.p2;
+
+  /*
+    XANH
+  */
+  els.p1Seat.className =
+    'seat-state';
+
+  if (!p1Holder) {
+    els.p1Seat.textContent =
+      'Trống';
+  } else if (
+    p1Holder === clientId
+  ) {
+    els.p1Seat.textContent =
+      'Bạn';
+
+    els.p1Seat.classList.add(
+      'you',
+    );
+  } else {
+    els.p1Seat.textContent =
+      'Đang chơi';
+  }
+
+  /*
+    ĐỎ
+  */
+  els.p2Seat.className =
+    'seat-state';
+
+  if (!p2Holder) {
+    els.p2Seat.textContent =
+      'Trống';
+  } else if (
+    p2Holder === clientId
+  ) {
+    els.p2Seat.textContent =
+      'Bạn';
+
+    els.p2Seat.classList.add(
+      'you',
+    );
+  } else {
+    els.p2Seat.textContent =
+      'Đang chơi';
+  }
+
+  /*
+    Chưa đồng bộ lobby xong.
+  */
+  if (!lobbyReady) {
+    els.myRole.textContent =
+      'Đang đồng bộ người chơi...';
+
+    els.joinP1.disabled = true;
+    els.joinP2.disabled = true;
+
+    els.joinP1.textContent =
+      'Đang đồng bộ...';
+
+    els.joinP2.textContent =
+      'Đang đồng bộ...';
+
+    els.leaveSeat.hidden = true;
+
+    els.reset.disabled = true;
+
+    return;
+  }
+
+  /*
+    Đã có phe.
+  */
+  if (side) {
+    els.myRole.textContent =
+      `Bạn: phe ${SIDE_NAME[side]}`;
+
+    els.joinP1.disabled = true;
+    els.joinP2.disabled = true;
+
+    els.joinP1.textContent =
+      side === 'p1'
+        ? '✓ Bạn là phe Xanh'
+        : 'Phe Xanh đã có người';
+
+    els.joinP2.textContent =
+      side === 'p2'
+        ? '✓ Bạn là phe Đỏ'
+        : 'Phe Đỏ đã có người';
+
+    els.leaveSeat.hidden = false;
+
+    els.reset.disabled = false;
+
+    return;
+  }
+
+  const index =
+    myLobbyIndex(layout);
+
+  /*
+    NGƯỜI ĐẦU TIÊN
+    -> được chọn một trong hai màu.
+  */
+  if (index === 0) {
+    els.myRole.textContent =
+      'Bạn vào phòng đầu tiên — hãy chọn phe';
+
+    els.joinP1.disabled = false;
+    els.joinP2.disabled = false;
+
+    els.joinP1.textContent =
+      'Chọn phe Xanh';
+
+    els.joinP2.textContent =
+      'Chọn phe Đỏ';
+
+    els.leaveSeat.hidden = true;
+
+    els.reset.disabled = true;
+
+    return;
+  }
+
+  /*
+    NGƯỜI THỨ HAI
+  */
+  if (index === 1) {
+    /*
+      Người đầu chưa chọn.
+    */
+    if (!layout.firstSide) {
+      els.myRole.textContent =
+        'Bạn vào thứ hai — đang chờ người đầu tiên chọn phe';
+
+      els.joinP1.disabled = true;
+      els.joinP2.disabled = true;
+
+      els.joinP1.textContent =
+        'Chờ người đầu tiên';
+
+      els.joinP2.textContent =
+        'Chờ người đầu tiên';
+
+      els.leaveSeat.hidden = true;
+
+      els.reset.disabled = true;
+
+      return;
+    }
+
+    /*
+      Người đầu đã chọn.
+      Chỉ mở đúng màu còn lại.
+    */
+    const remaining =
+      otherSide(layout.firstSide);
+
+    els.myRole.textContent =
+      `Bạn vào thứ hai — chỉ được chọn phe ${SIDE_NAME[remaining]}`;
+
+    if (remaining === 'p1') {
+      els.joinP1.disabled = false;
+      els.joinP2.disabled = true;
+
+      els.joinP1.textContent =
+        'Chọn phe Xanh';
+
+      els.joinP2.textContent =
+        'Phe Đỏ đã có người';
+    } else {
+      els.joinP1.disabled = true;
+      els.joinP2.disabled = false;
+
+      els.joinP1.textContent =
+        'Phe Xanh đã có người';
+
+      els.joinP2.textContent =
+        'Chọn phe Đỏ';
+    }
+
+    els.leaveSeat.hidden = true;
+
+    els.reset.disabled = true;
+
+    return;
+  }
+
+  /*
+    NGƯỜI THỨ BA TRỞ ĐI
+  */
+  els.myRole.textContent =
+    'Khán giả';
+
+  els.joinP1.disabled = true;
+  els.joinP2.disabled = true;
+
+  els.joinP1.textContent =
+    p1Holder
+      ? 'Phe Xanh đã có người'
+      : 'Đang chờ';
+
+  els.joinP2.textContent =
+    p2Holder
+      ? 'Phe Đỏ đã có người'
+      : 'Đang chờ';
+
+  els.leaveSeat.hidden = true;
+
+  els.reset.disabled = true;
+}
+
+/* =========================================================
+   STATUS
+   ========================================================= */
 
 function renderStatus() {
-  if (!gameState) return;
+  if (!game || !clientId) return;
 
-  myRole = deriveMyRole();
+  const layout = deriveLobby();
+  const side = mySide(layout);
 
-  const p1Total = countPieces(gameState.board, "p1");
-  const p2Total = countPieces(gameState.board, "p2");
-  els.p1Count.textContent = String(p1Total);
-  els.p2Count.textContent = String(p2Total);
+  if (game.winner) {
+    els.statusTitle.textContent =
+      `Phe ${SIDE_NAME[game.winner]} chiến thắng!`;
 
-  els.turnBadge.className = `turn-badge ${gameState.turn}`;
-  els.turnBadge.textContent = `Lượt ${PLAYER_META[gameState.turn].short}`;
+    els.statusDetail.textContent =
+      game.winner === side
+        ? 'Chúc mừng! Nhấn Chơi lại để bắt đầu ván mới.'
+        : 'Ván đấu đã kết thúc.';
 
-  if (gameState.winner) {
-    els.statusText.textContent = `${PLAYER_META[gameState.winner].name} đã thắng!`;
-  } else if (myRole === "spectator") {
-    els.statusText.textContent = `Đang tới lượt ${PLAYER_META[gameState.turn].short} · Bạn đang xem.`;
-  } else if (gameState.turn === myRole) {
-    els.statusText.textContent = "Tới lượt bạn — chọn một quân để di chuyển.";
-  } else {
-    els.statusText.textContent = `Đang chờ ${PLAYER_META[gameState.turn].short} đi quân.`;
-  }
+    els.turnBadge.textContent =
+      'VÁN ĐẤU KẾT THÚC';
 
-  els.myRole.textContent =
-    myRole === "spectator" ? "Khán giả" : PLAYER_META[myRole].name;
+    els.turnBadge.className =
+      `turn-badge ${game.winner}`;
 
-  renderSeatStatus("p1", els.p1Seat, els.joinP1Btn);
-  renderSeatStatus("p2", els.p2Seat, els.joinP2Btn);
-
-  els.leaveSeatBtn.disabled = myRole === "spectator";
-  els.resetBtn.disabled = myRole === "spectator";
-  els.modalResetBtn.disabled = myRole === "spectator";
-
-  renderWinnerModal();
-}
-
-function renderSeatStatus(player, labelEl, buttonEl) {
-  const holder = gameState?.seats?.[player] ?? null;
-  const isMine = holder === myId;
-  const isOnline = holder ? onlineIds.has(holder) : false;
-
-  if (!holder) {
-    labelEl.textContent = "Ghế đang trống.";
-  } else if (isMine) {
-    labelEl.textContent = `Bạn đang giữ ghế này · ${shortId(holder)}`;
-  } else if (isOnline) {
-    labelEl.textContent = `Đã có người chơi · ${shortId(holder)}`;
-  } else {
-    labelEl.textContent = `Người giữ ghế đã rời phòng · có thể tiếp quản.`;
-  }
-
-  buttonEl.disabled = isMine || (!isSeatAvailable(player) && !isMine);
-  buttonEl.textContent = isMine
-    ? "Bạn đang ở phe này"
-    : holder && !isOnline
-      ? `Tiếp quản phe ${PLAYER_META[player].short}`
-      : `Chọn phe ${PLAYER_META[player].short}`;
-}
-
-function renderWinnerModal() {
-  if (!gameState?.winner) {
-    els.winnerModal.hidden = true;
     return;
   }
 
-  const winner = gameState.winner;
-  els.winnerModal.hidden = false;
-  els.winnerTitle.textContent = `${PLAYER_META[winner].name} chiến thắng!`;
-  els.winnerReason.textContent = gameState.winReason || "Ván đấu đã kết thúc.";
-  els.winnerIcon.textContent = winner === "p1" ? "🔵🏆" : "🔴🏆";
-}
+  /*
+    Chưa chọn đủ 2 phe.
+  */
+  if (!bothPlayersReady(layout)) {
+    els.turnBadge.textContent =
+      'CHỜ CHỌN PHE';
 
-function renderAll() {
-  if (!gameState) return;
+    els.turnBadge.className =
+      'turn-badge';
 
-  // Nếu state remote thay đổi khiến quân đang chọn không còn hợp lệ, bỏ chọn.
-  if (selected) {
-    const piece = gameState.board[selected.r]?.[selected.c];
-    if (!piece || piece.owner !== myRole || gameState.turn !== myRole || gameState.winner) {
-      selected = null;
-      legalTargets.clear();
-    } else {
-      legalTargets = getLegalTargets(gameState.board, selected.r, selected.c);
+    const index =
+      myLobbyIndex(layout);
+
+    if (!lobbyReady) {
+      els.statusTitle.textContent =
+        'Đang đồng bộ phòng';
+
+      els.statusDetail.textContent =
+        'Đang xác định thứ tự người chơi...';
+
+      return;
     }
+
+    if (side) {
+      const remaining =
+        otherSide(side);
+
+      els.statusTitle.textContent =
+        `Bạn đã chọn phe ${SIDE_NAME[side]}`;
+
+      els.statusDetail.textContent =
+        `Đang chờ người chơi còn lại chọn phe ${SIDE_NAME[remaining]}.`;
+
+      return;
+    }
+
+    if (index === 0) {
+      els.statusTitle.textContent =
+        'Bạn là người vào phòng đầu tiên';
+
+      els.statusDetail.textContent =
+        'Bạn được quyền chọn phe Xanh hoặc phe Đỏ.';
+
+      return;
+    }
+
+    if (index === 1) {
+      if (!layout.firstSide) {
+        els.statusTitle.textContent =
+          'Chờ người chơi đầu tiên';
+
+        els.statusDetail.textContent =
+          'Người vào trước đang chọn phe. Sau đó bạn chỉ được chọn màu còn lại.';
+      } else {
+        const remaining =
+          otherSide(layout.firstSide);
+
+        els.statusTitle.textContent =
+          `Hãy chọn phe ${SIDE_NAME[remaining]}`;
+
+        els.statusDetail.textContent =
+          `Người vào trước đã chọn phe ${SIDE_NAME[layout.firstSide]}. Bạn chỉ có thể chọn phe ${SIDE_NAME[remaining]}.`;
+      }
+
+      return;
+    }
+
+    els.statusTitle.textContent =
+      'Bạn đang là khán giả';
+
+    els.statusDetail.textContent =
+      'Hai vị trí người chơi đang được ưu tiên cho hai người vào phòng đầu tiên.';
+
+    return;
   }
 
-  renderStatus();
-  renderBoard();
+  /*
+    Đủ 2 người -> chơi.
+  */
+  els.statusTitle.textContent =
+    `Lượt của phe ${SIDE_NAME[game.turn]}`;
+
+  els.turnBadge.textContent =
+    game.turn === side
+      ? 'ĐẾN LƯỢT BẠN'
+      : `LƯỢT ${SIDE_NAME[game.turn].toUpperCase()}`;
+
+  els.turnBadge.className =
+    `turn-badge ${game.turn}`;
+
+  if (!side) {
+    els.statusDetail.textContent =
+      'Bạn đang xem trận đấu.';
+  } else if (
+    game.turn === side
+  ) {
+    els.statusDetail.textContent =
+      'Chọn một quân của bạn, sau đó chọn ô được tô sáng.';
+  } else {
+    els.statusDetail.textContent =
+      'Đang chờ đối thủ thực hiện nước đi.';
+  }
 }
 
-function handleBoardClick(event) {
-  const tile = event.target.closest(".tile");
-  if (!tile || !gameState || !gameStore) return;
+/* =========================================================
+   RENDER
+   ========================================================= */
 
-  const r = Number(tile.dataset.r);
-  const c = Number(tile.dataset.c);
-  const clickedPiece = gameState.board[r][c];
-  const targetKind = legalTargets.get(keyOf(r, c));
+function render() {
+  if (!game) return;
 
-  if (gameState.winner) {
-    setToast("Ván đấu đã kết thúc. Hãy bấm Chơi lại.");
-    return;
-  }
+  const layout = deriveLobby();
+  const side = mySide(layout);
 
-  if (myRole === "spectator") {
-    setToast("Bạn đang là khán giả. Hãy chọn một phe còn trống.");
-    return;
-  }
-
-  if (gameState.turn !== myRole) {
-    setToast(`Chưa tới lượt bạn. Hiện là lượt ${PLAYER_META[gameState.turn].short}.`);
-    return;
-  }
-
-  // Đang chọn một quân và click vào ô hợp lệ => thực hiện nước đi.
-  if (selected && targetKind) {
-    commitMove(selected.r, selected.c, r, c, targetKind);
-    return;
-  }
-
-  // Click quân của mình => chọn/chuyển lựa chọn.
-  if (clickedPiece?.owner === myRole) {
-    selected = { r, c };
-    legalTargets = getLegalTargets(gameState.board, r, c);
-    renderBoard();
-    return;
-  }
-
-  // Click chỗ khác => bỏ chọn.
-  selected = null;
-  legalTargets.clear();
-  renderBoard();
-}
-
-function commitMove(fromR, fromC, toR, toC, targetKind) {
-  if (!gameStore || !gameState) return;
-
-  // Kiểm tra lại ngay trước khi gửi update để tránh thao tác từ state UI cũ.
-  const livePiece = gameState.board[fromR]?.[fromC];
-  const liveLegal = getLegalTargets(gameState.board, fromR, fromC);
   if (
-    gameState.winner ||
-    gameState.turn !== myRole ||
-    livePiece?.owner !== myRole ||
-    !liveLegal.has(keyOf(toR, toC))
+    selected &&
+    (
+      !bothPlayersReady(layout) ||
+      game.turn !== side ||
+      game.winner ||
+      game.board[
+        selected.row
+      ]?.[
+        selected.col
+      ]?.owner !== side
+    )
   ) {
     selected = null;
-    legalTargets.clear();
-    setToast("Nước đi không còn hợp lệ vì trạng thái phòng vừa thay đổi.");
-    renderAll();
+  }
+
+  renderBoard();
+  renderSeats();
+  renderStatus();
+}
+
+/* =========================================================
+   CHỌN PHE
+   ========================================================= */
+
+async function claimSeat(role) {
+  if (
+    !clientId ||
+    !validSide(role) ||
+    choosingSide
+  ) {
     return;
   }
 
-  const movingPiece = { ...livePiece };
-  const capturedPiece = gameState.board[toR][toC]
-    ? { ...gameState.board[toR][toC] }
-    : null;
+  if (!lobbyReady) {
+    notify(
+      'Đang đồng bộ người chơi, vui lòng chờ một chút.',
+    );
 
-  gameStore.setData((draft) => {
-    // Xác nhận lần nữa bằng draft mới nhất do playhtml cung cấp.
-    const draftPiece = draft.board?.[fromR]?.[fromC];
+    return;
+  }
+
+  choosingSide = true;
+
+  /*
+    Chờ ngắn để Presence giữa hai máy hội tụ trước
+    khi quyết định ai là người vào trước.
+  */
+  await sleep(180);
+
+  const layout = deriveLobby();
+
+  const existingSide =
+    mySide(layout);
+
+  if (existingSide) {
+    choosingSide = false;
+    return;
+  }
+
+  const index =
+    myLobbyIndex(layout);
+
+  /*
+    Người đầu tiên.
+  */
+  if (index === 0) {
+    /*
+      Nếu choice đã có nhưng chưa render kịp.
+    */
+    if (
+      layout.first?.choice &&
+      validSide(layout.first.choice)
+    ) {
+      choosingSide = false;
+      render();
+      return;
+    }
+
+    myChoice = role;
+
+    sessionStorage.setItem(
+      choiceKey,
+      myChoice,
+    );
+
+    publishMyPresence();
+
+    notify(
+      `Bạn đã chọn phe ${SIDE_NAME[role]}.`,
+    );
+
+    choosingSide = false;
+
+    await sleep(100);
+
+    render();
+
+    return;
+  }
+
+  /*
+    Người thứ hai.
+  */
+  if (index === 1) {
+    if (!layout.firstSide) {
+      choosingSide = false;
+
+      notify(
+        'Hãy chờ người vào phòng đầu tiên chọn phe.',
+      );
+
+      render();
+
+      return;
+    }
+
+    const remaining =
+      otherSide(layout.firstSide);
+
+    if (role !== remaining) {
+      choosingSide = false;
+
+      notify(
+        `Bạn chỉ được chọn phe ${SIDE_NAME[remaining]}.`,
+      );
+
+      render();
+
+      return;
+    }
+
+    myChoice = remaining;
+
+    sessionStorage.setItem(
+      choiceKey,
+      myChoice,
+    );
+
+    publishMyPresence();
+
+    notify(
+      `Bạn đã chọn phe ${SIDE_NAME[remaining]}.`,
+    );
+
+    choosingSide = false;
+
+    await sleep(100);
+
+    render();
+
+    return;
+  }
+
+  choosingSide = false;
+
+  notify(
+    'Phòng đã có hai người chơi. Bạn đang là khán giả.',
+  );
+
+  render();
+}
+
+/* =========================================================
+   MOVE
+   ========================================================= */
+
+function movePiece(from, to) {
+  if (!channel) return;
+
+  const layout =
+    deriveLobby();
+
+  if (
+    !bothPlayersReady(layout)
+  ) {
+    return;
+  }
+
+  const side =
+    mySide(layout);
+
+  if (!side) {
+    return;
+  }
+
+  channel.setData((draft) => {
+    /*
+      Kiểm tra lại ngay trong transaction.
+    */
     if (
       draft.winner ||
-      draft.turn !== myRole ||
-      draft.seats?.[myRole] !== myId ||
-      !draftPiece ||
-      draftPiece.owner !== myRole
+      draft.turn !== side
     ) {
       return;
     }
 
-    const currentLegal = getLegalTargets(draft.board, fromR, fromC);
-    if (!currentLegal.has(keyOf(toR, toC))) return;
+    const source =
+      draft.board[
+        from.row
+      ]?.[
+        from.col
+      ];
 
-    const nextBoard = cloneBoard(draft.board);
-    const captured = nextBoard[toR][toC];
-    nextBoard[toR][toC] = { ...nextBoard[fromR][fromC] };
-    nextBoard[fromR][fromC] = null;
+    if (
+      !source ||
+      source.owner !== side
+    ) {
+      return;
+    }
 
-    draft.board = nextBoard;
-    draft.moveNumber = (draft.moveNumber ?? 0) + 1;
+    const legal =
+      getLegalMoves(
+        draft.board,
+        from.row,
+        from.col,
+      );
+
+    if (
+      !legal.has(
+        `${to.row},${to.col}`,
+      )
+    ) {
+      return;
+    }
+
+    const movingType =
+      source.type;
+
+    /*
+      Bỏ quân khỏi ô cũ.
+    */
+    draft.board[
+      from.row
+    ].splice(
+      from.col,
+      1,
+      null,
+    );
+
+    /*
+      Đặt quân sang ô mới.
+      Nếu có quân địch ở đó thì quân địch bị thay thế.
+    */
+    draft.board[
+      to.row
+    ].splice(
+      to.col,
+      1,
+      {
+        owner: side,
+        type: movingType,
+      },
+    );
+
     draft.lastMove = {
-      by: myRole,
-      from: coordName(fromR, fromC),
-      to: coordName(toR, toC),
-      piece: movingPiece.type,
-      capture: captured ? captured.type : null,
-      at: Date.now(),
+      from: [
+        from.row,
+        from.col,
+      ],
+      to: [
+        to.row,
+        to.col,
+      ],
     };
 
-    const result = determineWinnerAfterMove(nextBoard, myRole, toR, toC);
-    if (result) {
-      draft.winner = result.winner;
-      draft.winReason = result.reason;
-    } else {
-      draft.turn = myRole === "p1" ? "p2" : "p1";
-    }
-  });
+    draft.moveNumber += 1;
 
-  selected = null;
-  legalTargets.clear();
+    /*
+      Xanh thắng khi tới h8.
+      row 0 col 7.
+    */
+    const reachedGoal =
+      side === 'p1'
+        ? (
+            to.row === 0 &&
+            to.col === 7
+          )
+        : (
+            to.row === 7 &&
+            to.col === 0
+          );
 
-  if (targetKind === "capture" && capturedPiece) {
-    setToast(
-      `${TYPES[movingPiece.type].label} ${TYPES[movingPiece.type].emoji} ăn ${TYPES[capturedPiece.type].label} ${TYPES[capturedPiece.type].emoji}.`
-    );
-  }
-}
+    const opponent =
+      otherSide(side);
 
-function claimSeat(player, { quiet = false } = {}) {
-  if (!gameStore || !gameState || !myId) return;
-
-  const holder = gameState.seats?.[player];
-  const other = player === "p1" ? "p2" : "p1";
-
-  if (gameState.seats?.[other] === myId) {
-    gameStore.setData((draft) => {
-      if (draft.seats?.[other] === myId) draft.seats[other] = null;
-      if (!draft.seats) draft.seats = { p1: null, p2: null };
-      draft.seats[player] = myId;
-    });
-    return;
-  }
-
-  if (holder && holder !== myId && onlineIds.has(holder)) {
-    if (!quiet) setToast(`Phe ${PLAYER_META[player].short} đang có người chơi.`);
-    return;
-  }
-
-  gameStore.setData((draft) => {
-    if (!draft.seats) draft.seats = { p1: null, p2: null };
-    const currentHolder = draft.seats[player];
-
-    // Chỉ nhận ghế nếu trống, là ghế của mình, hoặc chủ cũ đang offline theo snapshot presence.
-    if (!currentHolder || currentHolder === myId || !onlineIds.has(currentHolder)) {
-      draft.seats[player] = myId;
-    }
-  });
-
-  if (!quiet) setToast(`Đã chọn phe ${PLAYER_META[player].short}.`);
-}
-
-function leaveSeat() {
-  if (!gameStore || myRole === "spectator") return;
-  const leaving = myRole;
-
-  gameStore.setData((draft) => {
-    if (draft.seats?.[leaving] === myId) draft.seats[leaving] = null;
-  });
-
-  selected = null;
-  legalTargets.clear();
-  setToast("Bạn đã nhường ghế cho người khác.");
-}
-
-function resetGame() {
-  if (!gameStore || !gameState) return;
-  if (myRole === "spectator") {
-    setToast("Chỉ người đang giữ ghế mới có thể chơi lại.");
-    return;
-  }
-
-  const seats = { ...gameState.seats };
-  gameStore.setData(createInitialState(seats));
-  selected = null;
-  legalTargets.clear();
-  setToast("Đã tạo lại bàn cờ. Xanh đi trước.");
-}
-
-function refreshPresence() {
-  if (!playhtml?.presence) return;
-  const presences = playhtml.presence.getPresences();
-  const ids = new Set();
-
-  for (const presence of presences.values()) {
-    const id = presence.playerIdentity?.publicKey;
-    if (id) ids.add(id);
-  }
-
-  onlineIds = ids;
-  if (gameState) renderStatus();
-}
-
-function autoAssignSeat() {
-  if (!gameState || !myId) return;
-  if (deriveMyRole(gameState) !== "spectator") return;
-
-  // Đúng yêu cầu: người đầu tiên vào phòng lấy P1; người kế tiếp lấy P2.
-  // Không tự cướp ghế offline để tránh giành ghế khi người chơi đang refresh;
-  // trường hợp ghế cũ bị treo có nút "Tiếp quản" thủ công.
-  if (!gameState.seats?.p1) {
-    claimSeat("p1", { quiet: true });
-  } else if (!gameState.seats?.p2) {
-    claimSeat("p2", { quiet: true });
-  }
-}
-
-async function copyRoomLink() {
-  try {
-    await navigator.clipboard.writeText(window.location.href);
-    setToast("Đã sao chép link phòng. Gửi link này cho người chơi thứ hai.");
-  } catch {
-    setToast("Không sao chép tự động được. Hãy copy URL trên thanh địa chỉ.");
-  }
-}
-
-function withTimeout(promise, ms, message) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(message)), ms)
-    ),
-  ]);
-}
-
-async function loadPlayHTML() {
-  // Máy/trường/mạng nào chặn một CDN vẫn còn CDN dự phòng.
-  const sources = [
-    "https://unpkg.com/playhtml?module",
-    "https://cdn.jsdelivr.net/npm/playhtml/+esm",
-  ];
-
-  let lastError = null;
-  for (const source of sources) {
-    try {
-      const mod = await withTimeout(
-        import(source),
-        10000,
-        `Quá thời gian tải PlayHTML từ ${source}`
+    const opponentRemains =
+      draft.board.some(
+        (line) =>
+          line.some(
+            (piece) =>
+              piece?.owner ===
+              opponent,
+          ),
       );
-      if (mod?.playhtml) return mod.playhtml;
-    } catch (error) {
-      console.warn("Không tải được PlayHTML từ", source, error);
-      lastError = error;
-    }
-  }
 
-  throw lastError || new Error("Không tải được thư viện PlayHTML.");
+    if (
+      reachedGoal ||
+      !opponentRemains
+    ) {
+      draft.winner = side;
+    } else {
+      draft.turn = opponent;
+    }
+  });
+
+  selected = null;
+
+  render();
 }
 
-async function init() {
-  // Vẽ bàn ngay lập tức. Nếu mạng/CDN chậm, người dùng vẫn thấy giao diện thay vì
-  // bị kẹt mãi ở “Đang tải ván đấu…”. Khi PlayHTML sync xong, state thật sẽ thay thế.
-  gameState = createInitialState();
-  myRole = "spectator";
-  renderAll();
-  els.connectionText.textContent = "Đang kết nối realtime…";
-  els.roomText.textContent = `Phòng: ${ROOM_CODE}`;
+/* =========================================================
+   BOARD CLICK
+   ========================================================= */
 
-  try {
-    playhtml = await loadPlayHTML();
+els.board.addEventListener(
+  'click',
+  (event) => {
+    const square =
+      event.target.closest(
+        '.square',
+      );
 
-    // Dùng room tường minh để hai máy chỉ cần cùng ?room=ABC123 là chắc chắn chung phòng.
-    await withTimeout(
-      playhtml.init({
-        room: ROOM_ID,
-        onError: () => console.warn("PlayHTML báo lỗi kết nối realtime."),
-      }),
-      15000,
-      "PlayHTML kết nối quá 15 giây. Có thể mạng, firewall hoặc extension đang chặn realtime."
+    if (
+      !square ||
+      !game ||
+      game.winner
+    ) {
+      return;
+    }
+
+    const layout =
+      deriveLobby();
+
+    if (
+      !bothPlayersReady(layout)
+    ) {
+      notify(
+        'Cần đủ hai người chọn phe trước khi bắt đầu.',
+      );
+
+      return;
+    }
+
+    const side =
+      mySide(layout);
+
+    if (
+      !side ||
+      game.turn !== side
+    ) {
+      return;
+    }
+
+    const row =
+      Number(
+        square.dataset.row,
+      );
+
+    const col =
+      Number(
+        square.dataset.col,
+      );
+
+    if (selected) {
+      const legal =
+        getLegalMoves(
+          game.board,
+          selected.row,
+          selected.col,
+        );
+
+      if (
+        legal.has(
+          `${row},${col}`,
+        )
+      ) {
+        movePiece(
+          selected,
+          {
+            row,
+            col,
+          },
+        );
+
+        return;
+      }
+    }
+
+    selected =
+      game.board[
+        row
+      ][
+        col
+      ]?.owner === side
+        ? {
+            row,
+            col,
+          }
+        : null;
+
+    renderBoard();
+  },
+);
+
+/* =========================================================
+   BUTTONS
+   ========================================================= */
+
+els.joinP1.addEventListener(
+  'click',
+  () => {
+    claimSeat('p1');
+  },
+);
+
+els.joinP2.addEventListener(
+  'click',
+  () => {
+    claimSeat('p2');
+  },
+);
+
+/*
+  RỜI GHẾ
+
+  Người rời ghế được đưa xuống cuối hàng.
+  Nhờ vậy không chặn người chơi tiếp theo.
+*/
+els.leaveSeat.addEventListener(
+  'click',
+  async () => {
+    const layout =
+      deriveLobby();
+
+    const side =
+      mySide(layout);
+
+    if (!side) {
+      return;
+    }
+
+    selected = null;
+
+    myChoice = null;
+
+    myJoinedAt =
+      Date.now();
+
+    sessionStorage.setItem(
+      joinedAtKey,
+      String(myJoinedAt),
     );
 
-    const identity = playhtml.presence.getMyIdentity();
-    myId = identity.publicKey;
+    sessionStorage.removeItem(
+      choiceKey,
+    );
 
-    // Presence chỉ dùng để biết người giữ ghế có đang online hay không.
-    playhtml.presence.setMyPresence("ottv2", { userId: myId });
-    playhtml.presence.onPresenceChange("ottv2", refreshPresence);
-    refreshPresence();
+    publishMyPresence();
 
-    // Shared persistent store của toàn bộ ván đấu.
-    gameStore = playhtml.createPageData("ottv2-game-state-v2", createInitialState());
-    gameState = gameStore.getData();
+    notify(
+      'Bạn đã rời ghế.',
+    );
 
-    gameStore.onUpdate((nextState) => {
-      gameState = nextState;
-      myRole = deriveMyRole(nextState);
-      renderAll();
+    await sleep(150);
+
+    render();
+  },
+);
+
+/* =========================================================
+   RESET
+   ========================================================= */
+
+els.reset.addEventListener(
+  'click',
+  () => {
+    if (!channel) return;
+
+    const side =
+      mySide();
+
+    if (!side) {
+      return;
+    }
+
+    selected = null;
+
+    channel.setData(
+      (draft) => {
+        draft.board =
+          createBoard();
+
+        draft.turn =
+          'p1';
+
+        draft.winner =
+          null;
+
+        draft.lastMove =
+          null;
+
+        draft.moveNumber =
+          0;
+      },
+    );
+  },
+);
+
+/* =========================================================
+   COPY LINK
+   ========================================================= */
+
+els.copyLink.addEventListener(
+  'click',
+  async () => {
+    try {
+      await navigator.clipboard.writeText(
+        location.href,
+      );
+
+      notify(
+        'Đã sao chép liên kết phòng.',
+      );
+    } catch {
+      notify(
+        `Liên kết phòng: ${location.href}`,
+      );
+    }
+  },
+);
+
+/* =========================================================
+   START MULTIPLAYER
+   ========================================================= */
+
+async function start() {
+  try {
+    els.connection.textContent =
+      'Đang kết nối...';
+
+    els.connection.className =
+      'connection';
+
+    await playhtml.init({
+      room: `ottv2-${roomCode}`,
     });
 
-    els.connectionDot.classList.add("online");
-    els.connectionText.textContent = "Đã kết nối realtime";
-    els.roomText.textContent = `Phòng: ${ROOM_CODE}`;
+    clientId =
+      playhtml.presence
+        .getMyIdentity()
+        .publicKey;
 
-    myRole = deriveMyRole(gameState);
-    renderAll();
-    autoAssignSeat();
+    /*
+      Đưa thông tin người chơi vào Presence.
+    */
+    publishMyPresence();
+
+    /*
+      Khi 2 máy cùng mở gần như một lúc,
+      cho Presence khoảng thời gian ngắn
+      để cả hai nhìn thấy nhau rồi mới
+      mở nút chọn phe.
+    */
+    await sleep(1200);
+
+    /*
+      Chỉ game nằm trong PageData.
+      Ghế không còn dùng PageData nữa.
+      Ghế được suy ra từ Presence.
+    */
+    channel =
+      playhtml.createPageData(
+        GAME_KEY,
+        initialGame(),
+      );
+
+    game =
+      channel.getData();
+
+    lastGameSnapshot =
+      JSON.stringify(game);
+
+    channel.onUpdate(
+      (nextGame) => {
+        game = nextGame;
+
+        lastGameSnapshot =
+          JSON.stringify(game);
+
+        render();
+      },
+    );
+
+    /*
+      Presence thay đổi:
+      - người mới vào
+      - người thoát
+      - chọn phe
+      - đổi thứ tự sau khi rời ghế
+    */
+    playhtml.presence.onPresenceChange(
+      PRESENCE_KEY,
+      () => {
+        render();
+      },
+    );
+
+    /*
+      Poll nhẹ để bảo đảm trạng thái game
+      hội tụ ngay cả khi callback chậm.
+    */
+    setInterval(() => {
+      if (!channel) return;
+
+      const latest =
+        channel.getData();
+
+      const snapshot =
+        JSON.stringify(latest);
+
+      if (
+        snapshot ===
+        lastGameSnapshot
+      ) {
+        return;
+      }
+
+      game = latest;
+
+      lastGameSnapshot =
+        snapshot;
+
+      render();
+    }, 250);
+
+    lobbyReady = true;
+
+    els.connection.textContent =
+      'Đã đồng bộ';
+
+    els.connection.className =
+      'connection online';
+
+    render();
   } catch (error) {
-    console.error(error);
-    els.connectionDot.classList.remove("online");
-    els.connectionText.textContent = "Mất kết nối realtime";
-    els.statusText.textContent =
-      "Bàn cờ đã tải nhưng multiplayer chưa kết nối. Hãy thử Chrome/Edge, tắt AdBlock/VPN rồi tải lại.";
-    setToast(String(error?.message || error), 0);
+    console.error(
+      'Không thể kết nối PlayHTML:',
+      error,
+    );
+
+    lobbyReady = false;
+
+    els.connection.textContent =
+      'Mất kết nối';
+
+    els.connection.className =
+      'connection offline';
+
+    els.statusTitle.textContent =
+      'Không thể mở phòng';
+
+    els.statusDetail.textContent =
+      'Kiểm tra kết nối mạng rồi tải lại trang.';
+
+    els.joinP1.disabled = true;
+    els.joinP2.disabled = true;
   }
 }
 
-els.board.addEventListener("click", handleBoardClick);
-els.joinP1Btn.addEventListener("click", () => claimSeat("p1"));
-els.joinP2Btn.addEventListener("click", () => claimSeat("p2"));
-els.leaveSeatBtn.addEventListener("click", leaveSeat);
-els.copyRoomBtn.addEventListener("click", copyRoomLink);
-els.resetBtn.addEventListener("click", resetGame);
-els.modalResetBtn.addEventListener("click", resetGame);
-
-init();
+start();
