@@ -5,22 +5,122 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta
     name="description"
-    content="Oẳn Tù Tì chiến thuật 2 người chơi thời gian thực với PlayHTML"
+    content="OTT Arena - Oẳn Tù Tì chiến thuật 8x8 multiplayer thời gian thực"
   />
-  <title>OTT Arena — Rock Paper Scissors Tactics</title>
+  <title>OTT Arena — Multiplayer</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <main class="app-shell">
+  <section id="entryScreen" class="entry-screen">
+    <div class="entry-card">
+      <p class="eyebrow">REAL-TIME BOARD GAME</p>
+      <h1>OTT Arena</h1>
+      <p class="entry-subtitle">Oẳn Tù Tì chiến thuật · 8×8 · Multiplayer</p>
+
+      <div id="entryConnection" class="entry-connection">
+        <span id="entryConnectionDot" class="connection-dot"></span>
+        <span id="entryConnectionText">Đang kết nối sảnh…</span>
+      </div>
+
+      <div id="roleStep" class="entry-step">
+        <h2>Chọn vai trò</h2>
+        <p>Bạn muốn tham gia trận đấu hay chỉ xem?</p>
+
+        <div class="entry-actions two-col">
+          <button id="rolePlayerBtn" class="choice-card choice-player" type="button">
+            <span class="choice-icon">🎮</span>
+            <strong>Player</strong>
+            <small>Chơi với một người khác</small>
+          </button>
+
+          <button id="roleViewerBtn" class="choice-card choice-viewer" type="button">
+            <span class="choice-icon">👁️</span>
+            <strong>Viewer</strong>
+            <small>Xem một trận đang diễn ra</small>
+          </button>
+        </div>
+      </div>
+
+      <div id="playerStep" class="entry-step" hidden>
+        <h2>Chọn cách vào trận</h2>
+        <p>Tạo phòng mới hoặc ghép ngẫu nhiên vào một phòng đang chờ.</p>
+
+        <div class="entry-actions two-col">
+          <button id="createRoomBtn" class="choice-card choice-create" type="button">
+            <span class="choice-icon">➕</span>
+            <strong>Tạo phòng</strong>
+            <small>Bạn được chọn phe trước</small>
+          </button>
+
+          <button id="joinRandomBtn" class="choice-card choice-join" type="button">
+            <span class="choice-icon">⚡</span>
+            <strong>Join phòng</strong>
+            <small>Tự ghép phòng trống ngẫu nhiên</small>
+          </button>
+        </div>
+
+        <button id="backRoleBtn" class="btn btn-ghost entry-back" type="button">
+          ← Quay lại
+        </button>
+      </div>
+
+      <div id="sideStep" class="entry-step" hidden>
+        <h2>Chọn phe của bạn</h2>
+        <p>
+          Người tạo phòng chọn phe trước.
+          Người join sau sẽ tự động nhận phe còn lại.
+        </p>
+
+        <div class="entry-actions two-col">
+          <button id="chooseBlueBtn" class="choice-card side-blue" type="button">
+            <span class="side-orb blue"></span>
+            <strong>Phe Xanh</strong>
+            <small>Đích đến: h8</small>
+          </button>
+
+          <button id="chooseRedBtn" class="choice-card side-red" type="button">
+            <span class="side-orb red"></span>
+            <strong>Phe Đỏ</strong>
+            <small>Đích đến: a1</small>
+          </button>
+        </div>
+
+        <button id="backPlayerBtn" class="btn btn-ghost entry-back" type="button">
+          ← Quay lại
+        </button>
+      </div>
+
+      <div id="matchingStep" class="entry-step matching-step" hidden>
+        <div class="matching-spinner"></div>
+
+        <h2 id="matchingTitle">Đang tìm trận…</h2>
+        <p id="matchingText">Vui lòng chờ.</p>
+
+        <div id="matchingRoom" class="room-chip" hidden></div>
+
+        <button id="cancelMatchBtn" class="btn btn-ghost" type="button">
+          Hủy
+        </button>
+      </div>
+
+      <p id="lobbyMessage" class="lobby-message"></p>
+    </div>
+  </section>
+
+  <main id="gameShell" class="app-shell" hidden>
+
     <header class="topbar">
       <div>
         <p class="eyebrow">REAL-TIME BOARD GAME</p>
         <h1>OTT Arena</h1>
-        <p class="subtitle">Oẳn Tù Tì chiến thuật · 8×8 · Multiplayer bằng PlayHTML</p>
+        <p class="subtitle">
+          Oẳn Tù Tì chiến thuật · 8×8 · Multiplayer bằng PlayHTML
+        </p>
       </div>
 
-      <div class="connection-card" aria-live="polite">
+      <div class="connection-card">
         <span id="connectionDot" class="connection-dot"></span>
+
         <div>
           <strong id="connectionText">Đang kết nối…</strong>
           <small id="roomText">Phòng: —</small>
@@ -29,113 +129,241 @@
     </header>
 
     <section class="game-layout">
+
       <aside class="panel side-panel">
+
         <section class="player-card player-card--blue">
           <div class="player-heading">
             <span class="player-orb blue"></span>
+
             <div>
               <strong>Player 1 · Xanh</strong>
               <small>Đích: h8</small>
             </div>
           </div>
-          <p id="p1Seat" class="seat-status">Đang chờ người chơi…</p>
-          <button id="joinP1Btn" class="btn btn-blue" type="button">Chọn phe Xanh</button>
+
+          <p id="p1Seat" class="seat-status">Đang chờ…</p>
         </section>
 
         <section class="player-card player-card--red">
           <div class="player-heading">
             <span class="player-orb red"></span>
+
             <div>
               <strong>Player 2 · Đỏ</strong>
               <small>Đích: a1</small>
             </div>
           </div>
-          <p id="p2Seat" class="seat-status">Đang chờ người chơi…</p>
-          <button id="joinP2Btn" class="btn btn-red" type="button">Chọn phe Đỏ</button>
+
+          <p id="p2Seat" class="seat-status">Đang chờ…</p>
         </section>
 
         <section class="role-card">
           <span>Vai trò của bạn</span>
-          <strong id="myRole">Đang xác định…</strong>
-          <button id="leaveSeatBtn" class="btn btn-ghost" type="button">Nhường ghế</button>
+
+          <strong id="myRole">
+            Đang xác định…
+          </strong>
+
+          <small id="viewerCount">
+            0 viewers
+          </small>
+
+          <button id="leaveGameBtn" class="btn btn-ghost" type="button">
+            Về sảnh
+          </button>
         </section>
 
         <section class="rules-mini">
           <h2>Luật ăn quân</h2>
-          <div class="rps-row"><span>✊</span><b>ăn</b><span>✌️</span></div>
-          <div class="rps-row"><span>✌️</span><b>ăn</b><span>✋</span></div>
-          <div class="rps-row"><span>✋</span><b>ăn</b><span>✊</span></div>
-          <p>Cùng loại hoặc quân yếu hơn sẽ không thể đi vào ô đối phương.</p>
+
+          <div class="rps-row">
+            <span>✊</span>
+            <b>ăn</b>
+            <span>✌️</span>
+          </div>
+
+          <div class="rps-row">
+            <span>✌️</span>
+            <b>ăn</b>
+            <span>✋</span>
+          </div>
+
+          <div class="rps-row">
+            <span>✋</span>
+            <b>ăn</b>
+            <span>✊</span>
+          </div>
+
+          <p>
+            Cùng loại hoặc quân yếu hơn sẽ không thể đi vào ô đối phương.
+          </p>
         </section>
+
       </aside>
 
       <section class="board-section">
-        <div class="status-bar" aria-live="polite">
+
+        <div class="status-bar">
           <div>
-            <span class="status-label">Trạng thái</span>
-            <strong id="statusText">Đang tải ván đấu…</strong>
+            <span class="status-label">
+              Trạng thái
+            </span>
+
+            <strong id="statusText">
+              Đang tải ván đấu…
+            </strong>
           </div>
-          <div id="turnBadge" class="turn-badge">—</div>
+
+          <div id="turnBadge" class="turn-badge">
+            —
+          </div>
         </div>
 
         <div class="board-wrap">
-          <div id="board" class="board" role="grid" aria-label="Bàn cờ OTT 8x8"></div>
+          <div
+            id="board"
+            class="board"
+            role="grid"
+            aria-label="Bàn cờ OTT 8x8"
+          ></div>
         </div>
 
         <div class="board-legend">
-          <span><i class="legend-dot move"></i> Ô có thể đi</span>
-          <span><i class="legend-dot capture"></i> Có thể ăn</span>
-          <span><i class="legend-dot target"></i> Ô chiến thắng</span>
+          <span>
+            <i class="legend-dot move"></i>
+            Ô có thể đi
+          </span>
+
+          <span>
+            <i class="legend-dot capture"></i>
+            Có thể ăn
+          </span>
+
+          <span>
+            <i class="legend-dot target"></i>
+            Ô chiến thắng
+          </span>
         </div>
+
       </section>
 
       <aside class="panel info-panel">
+
         <section>
           <h2>Mục tiêu</h2>
+
           <div class="goal-card goal-card--blue">
             <span>🔵</span>
-            <p><strong>Xanh</strong> đưa bất kỳ quân nào tới <b>h8</b>.</p>
+
+            <p>
+              <strong>Xanh</strong>
+              đưa bất kỳ quân nào tới
+              <b>h8</b>.
+            </p>
           </div>
+
           <div class="goal-card goal-card--red">
             <span>🔴</span>
-            <p><strong>Đỏ</strong> đưa bất kỳ quân nào tới <b>a1</b>.</p>
+
+            <p>
+              <strong>Đỏ</strong>
+              đưa bất kỳ quân nào tới
+              <b>a1</b>.
+            </p>
           </div>
-          <p class="hint">Bạn cũng thắng nếu ăn hết toàn bộ quân đối phương.</p>
+
+          <p class="hint">
+            Bạn cũng thắng nếu ăn hết toàn bộ quân đối phương.
+          </p>
         </section>
 
         <section class="piece-counts">
+
           <h2>Quân còn lại</h2>
+
           <div class="count-row">
             <span>Xanh</span>
             <strong id="p1Count">0</strong>
           </div>
+
           <div class="count-row">
             <span>Đỏ</span>
             <strong id="p2Count">0</strong>
           </div>
+
         </section>
 
         <section class="actions">
-          <button id="copyRoomBtn" class="btn btn-secondary" type="button">Sao chép link phòng</button>
-          <button id="resetBtn" class="btn btn-primary" type="button">Chơi lại</button>
+
+          <button
+            id="copyRoomBtn"
+            class="btn btn-secondary"
+            type="button"
+          >
+            Sao chép link xem
+          </button>
+
+          <button
+            id="resetBtn"
+            class="btn btn-primary"
+            type="button"
+          >
+            Chơi lại
+          </button>
+
         </section>
 
-        <p id="toast" class="toast" aria-live="polite"></p>
+        <p id="toast" class="toast"></p>
+
       </aside>
+
     </section>
+
   </main>
 
   <div id="winnerModal" class="modal" hidden>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="winnerTitle">
-      <div id="winnerIcon" class="winner-icon">🏆</div>
-      <p class="eyebrow">VÁN ĐẤU KẾT THÚC</p>
-      <h2 id="winnerTitle">Player thắng!</h2>
+
+    <div class="modal-card">
+
+      <div id="winnerIcon" class="winner-icon">
+        🏆
+      </div>
+
+      <p class="eyebrow">
+        VÁN ĐẤU KẾT THÚC
+      </p>
+
+      <h2 id="winnerTitle">
+        Player thắng!
+      </h2>
+
       <p id="winnerReason"></p>
-      <button id="modalResetBtn" class="btn btn-primary" type="button">Chơi lại</button>
+
+      <button
+        id="modalResetBtn"
+        class="btn btn-primary"
+        type="button"
+      >
+        Chơi lại
+      </button>
+
+      <button
+        id="modalLobbyBtn"
+        class="btn btn-ghost"
+        type="button"
+      >
+        Về sảnh
+      </button>
+
     </div>
+
   </div>
 
-  <noscript>Bạn cần bật JavaScript để chơi.</noscript>
+  <noscript>
+    Bạn cần bật JavaScript để chơi.
+  </noscript>
+
   <script type="module" src="./main.js"></script>
 </body>
 </html>
